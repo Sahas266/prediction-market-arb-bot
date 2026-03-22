@@ -1,5 +1,53 @@
 # Cross-Venue Prediction Market Arbitrage Bot — Detailed Plan
 
+## Status Summary (as of 2026-03-22)
+
+### Completion by Phase
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| **Phase 1: Read-Only Foundation** | **COMPLETE** | Rust implementation (ported from Python). Both adapters produce CanonicalBook. 6 manual mappings verified. SQLite logging. Polymarket WS + Kalshi REST polling working. |
+| **Phase 2: Opportunity Detection** | **COMPLETE** | Detector runs in main loop with both directions. All filters implemented (freshness, depth, threshold). Opportunities logged to SQLite. CLI real-time output. |
+| **Phase 3: Replay & Validation** | **NOT STARTED** | Need 24h+ of logged data before replay analysis. |
+| **Phase 4: Execution** | **PARTIAL** | Kalshi order placement implemented (RSA auth, FOK). Polymarket execution not yet ported. Risk manager implemented but untested with real orders. |
+| **Phase 5: Hardening** | **NOT STARTED** | Kalshi WS upgrade, error recovery, position reconciliation. |
+
+### What's Built (Rust — `rust_arb/`)
+
+- [x] Config loading (YAML + .env + RSA key parsing)
+- [x] Kalshi REST adapter with RSA-PSS-SHA256 auth, orderbook inversion, retry/backoff
+- [x] Polymarket CLOB REST + WebSocket adapter with book cache
+- [x] Polymarket fee rate caching
+- [x] Contract registry with manual mappings loader
+- [x] Opportunity detector (both arb directions, fees, slippage, depth/freshness filters)
+- [x] Risk manager (rate limiting, kill switch, notional limits)
+- [x] Kalshi order execution (FOK, fragile-venue-first)
+- [x] SQLite schema + book/opportunity logging
+- [x] Main monitoring loop with graceful shutdown
+- [x] 7 passing tests (unit + live API integration)
+- [x] Auto-discovery tool (`bin/discover_pairs`) for finding new cross-venue candidates
+
+### What's NOT Built Yet
+
+- [ ] Polymarket authenticated trading (EIP-712 signing, HMAC API auth)
+- [ ] Kalshi WebSocket (authenticated connection for real-time orderbooks)
+- [ ] Replay evaluator (analyze logged opportunity persistence and false positive rate)
+- [ ] Position reconciliation (verify local state matches venue state)
+- [ ] Trade logging (realized edge vs. expected)
+- [ ] Alerting / monitoring (kill switch notifications, daily PnL)
+
+### Next Steps (Priority Order)
+
+1. **Collect data**: Run the monitor for 24-48h to build a `books_log` and `opportunities` dataset
+2. **Replay evaluation**: Build `replay_eval` to analyze how long detected opportunities persist, false positive rate, and optimal threshold calibration
+3. **Expand mappings**: Run `discover_pairs` regularly to find new cross-venue pairs, verify and promote to manual_mappings.json
+4. **Polymarket execution**: Port EIP-712 order signing and HMAC auth to Rust for the trading leg
+5. **Paper trade**: Execute with `$0` notional (log would-be trades) to validate execution timing
+6. **Live trade (tiny size)**: $5-10 per leg on clearly profitable (5c+ net edge) opportunities
+7. **Kalshi WS upgrade**: Replace REST polling with authenticated WebSocket for lower latency
+
+---
+
 ## 1. Core Thesis
 
 Buy **YES** on Venue A and **NO** on Venue B (or vice versa) for the *same* binary event. The combined payout is always $1.00 at resolution regardless of outcome:
@@ -143,42 +191,31 @@ This is a **locked arbitrage** — not a directional bet. The bot should never s
 
 ## 4. Project Structure
 
+> **Note:** Project was ported from Python to Rust for performance. Structure below reflects current Rust implementation.
+
 ```
-pbc-arb/
-├── pyproject.toml              # project metadata, dependencies
-├── .env.example                # template for secrets
+PBC-Hackathon-2026/
 ├── config.yaml                 # runtime config (thresholds, limits, polling intervals)
+├── .env.example                # template for secrets (Kalshi RSA keys)
 ├── mappings/
-│   └── manual_mappings.json    # hand-verified canonical contract mappings
-├── src/
-│   ├── __init__.py
-│   ├── main.py                 # orchestrator / entry point
-│   ├── config.py               # load config.yaml + env vars
-│   ├── models.py               # dataclasses: CanonicalContract, CanonicalBook, Opportunity, Order, Fill
-│   ├── db.py                   # SQLite schema + CRUD helpers
-│   ├── adapters/
-│   │   ├── __init__.py
-│   │   ├── base.py             # VenueAdapter ABC
-│   │   ├── polymarket.py       # Polymarket adapter (Gamma + CLOB + WS)
-│   │   └── kalshi.py           # Kalshi adapter (REST + WS phase 2)
-│   ├── matcher/
-│   │   ├── __init__.py
-│   │   ├── registry.py         # contract registry: canonical_id ↔ venue mappings
-│   │   ├── normalizer.py       # text/date/subject normalization
-│   │   └── manual.py           # load manual_mappings.json overrides
-│   ├── detector.py             # opportunity detection logic
-│   ├── risk.py                 # risk manager
-│   ├── executor.py             # execution engine
-│   └── utils.py                # shared helpers (Decimal parsing, timestamp, logging)
-├── scripts/
-│   ├── discover_markets.py     # one-shot: dump active markets from both venues
-│   ├── match_candidates.py     # one-shot: find potential cross-venue pairs
-│   └── replay_eval.py          # backtest: evaluate historical opportunity quality
-├── tests/
-│   ├── test_detector.py
-│   ├── test_matcher.py
-│   ├── test_adapters.py
-│   └── test_risk.py
+│   └── manual_mappings.json    # 6 hand-verified canonical contract mappings
+├── rust_arb/
+│   ├── Cargo.toml
+│   └── src/
+│       ├── main.rs             # monitoring loop + orchestrator + tests
+│       ├── bin/
+│       │   └── discover_pairs.rs  # auto-discovery of cross-venue candidates
+│       ├── adapters/
+│       │   ├── mod.rs
+│       │   ├── kalshi.rs       # Kalshi REST + RSA-PSS auth + order execution
+│       │   └── polymarket.rs   # Polymarket WS + CLOB REST + fee caching
+│       ├── config.rs           # YAML + .env config loading
+│       ├── db.rs               # SQLite schema + CRUD helpers
+│       ├── detector.rs         # opportunity detection (both arb directions)
+│       ├── executor.rs         # two-leg execution engine (fragile venue first)
+│       ├── models.rs           # Venue, CanonicalBook, Opportunity, VenueMapping
+│       ├── registry.rs         # contract registry + manual mappings loader
+│       └── risk.rs             # risk manager + kill switch
 └── data/
     └── arb.db                  # SQLite database (gitignored)
 ```
@@ -835,77 +872,79 @@ No heavy frameworks. Stdlib `asyncio` for the event loop, `sqlite3` for persiste
 
 ## 13. Build Phases
 
-### Phase 1: Read-Only Foundation (Week 1)
+### Phase 1: Read-Only Foundation (Week 1) — COMPLETE
 
 **Goal:** Prove you can ingest and normalize market data from both venues.
 
-| Task | Detail |
-|------|--------|
-| Project scaffolding | `pyproject.toml`, config, directory structure |
-| Polymarket adapter (read) | Gamma API market discovery + CLOB REST book fetching |
-| Kalshi adapter (read) | REST market discovery + orderbook polling |
-| Book normalization | Both adapters produce `CanonicalBook` objects |
-| Manual mappings | JSON file with 10–20 hand-verified cross-venue pairs |
-| Contract registry | Load mappings, look up canonical_id by (venue, native_id) |
-| SQLite setup | Schema creation, book logging |
-| Discovery script | `scripts/discover_markets.py` — dump active markets from both venues |
+| Task | Detail | Status |
+|------|--------|--------|
+| Project scaffolding | Rust crate with Cargo.toml, config, directory structure | DONE |
+| Polymarket adapter (read) | CLOB REST book fetching + WebSocket real-time | DONE |
+| Kalshi adapter (read) | REST orderbook polling with RSA auth | DONE |
+| Book normalization | Both adapters produce `CanonicalBook` objects | DONE |
+| Manual mappings | JSON file with 6 hand-verified cross-venue pairs | DONE |
+| Contract registry | Load mappings, look up canonical_id by (venue, native_id) | DONE |
+| SQLite setup | Schema creation, book logging | DONE |
+| Discovery script | `bin/discover_pairs` — auto-discover cross-venue candidates | DONE |
 
-**Exit criteria:** You can run a loop that prints normalized book snapshots for matched pairs from both venues every 2 seconds.
+**Exit criteria:** You can run a loop that prints normalized book snapshots for matched pairs from both venues every 2 seconds. **MET** — monitor runs live.
 
-### Phase 2: Opportunity Detection (Week 2)
+### Phase 2: Opportunity Detection (Week 2) — COMPLETE
 
 **Goal:** Detect and log arbitrage opportunities without trading.
 
-| Task | Detail |
-|------|--------|
-| Opportunity detector | Implement detection logic with all filters |
-| Polymarket WebSocket | Replace REST polling with WS for real-time updates |
-| Opportunity logger | Write every detected opportunity to SQLite |
-| Dashboard / CLI output | Print opportunities in real-time with net_edge, size, ages |
-| Matching script | `scripts/match_candidates.py` — find new potential pairs |
+| Task | Detail | Status |
+|------|--------|--------|
+| Opportunity detector | Both arb directions, fees, slippage, freshness/depth filters | DONE |
+| Polymarket WebSocket | WS push-based book updates with heartbeat | DONE |
+| Opportunity logger | Every detected opportunity written to SQLite | DONE |
+| Dashboard / CLI output | Real-time logging with net_edge, size, venues | DONE |
+| Matching script | `bin/discover_pairs` — auto-discover new cross-venue candidates | DONE |
 
-**Exit criteria:** The bot logs 24h of opportunity data. You can analyze frequency, edge distribution, and persistence of signals.
+**Exit criteria:** The bot logs 24h of opportunity data. You can analyze frequency, edge distribution, and persistence of signals. **PENDING** — detector works, need to collect data.
 
-### Phase 3: Replay & Validation (Week 2–3)
+### Phase 3: Replay & Validation (Week 2–3) — NOT STARTED
 
 **Goal:** Validate that logged opportunities were real and tradeable.
 
-| Task | Detail |
-|------|--------|
-| Replay evaluator | `scripts/replay_eval.py` — for each logged opportunity, check if it still existed 1s, 5s, 30s later |
-| False positive analysis | Identify phantom arbs from stale books |
-| Threshold tuning | Adjust `min_net_edge`, `slippage_buffer`, `max_stale_ms` based on data |
-| Expand mappings | Add more verified pairs based on discovered candidates |
+| Task | Detail | Status |
+|------|--------|--------|
+| Replay evaluator | For each logged opportunity, check if it still existed 1s, 5s, 30s later | TODO |
+| False positive analysis | Identify phantom arbs from stale books | TODO |
+| Threshold tuning | Adjust `min_net_edge`, `slippage_buffer`, `max_stale_ms` based on data | TODO |
+| Expand mappings | Add more verified pairs using `discover_pairs` tool | TODO |
+
+**Blocker:** Need 24h+ of logged data from Phase 2 before this phase can begin.
 
 **Exit criteria:** You have confidence numbers: X% of opportunities above threshold Y persisted for Z seconds. You know your false positive rate.
 
-### Phase 4: Execution (Week 3–4)
+### Phase 4: Execution (Week 3–4) — PARTIAL
 
 **Goal:** Trade real money in small size.
 
-| Task | Detail |
-|------|--------|
-| Polymarket execution | Authenticated trading via `py-clob-client` SDK with FOK orders |
-| Kalshi execution | Authenticated trading via REST with FOK orders |
-| Risk manager | Hard limits, kill switch, position tracking |
-| Execution engine | Fragile-leg-first sequencing, residual handling |
-| Trade logging | Orders, fills, realized edge vs. expected |
-| Kalshi sandbox testing | Test execution flow against `demo-api.kalshi.co` first |
+| Task | Detail | Status |
+|------|--------|--------|
+| Kalshi execution | Authenticated trading via REST with FOK orders | DONE |
+| Risk manager | Hard limits, kill switch, position tracking | DONE |
+| Execution engine | Fragile-leg-first sequencing, residual handling | DONE (Kalshi leg) |
+| Polymarket execution | Authenticated trading (EIP-712 signing, HMAC auth) | TODO |
+| Trade logging | Orders, fills, realized edge vs. expected | TODO |
+| Kalshi sandbox testing | Test execution flow against `demo-api.kalshi.co` first | TODO |
 
 **Exit criteria:** Bot executes 10+ real locked arbs in tiny size ($5–10 per leg) with positive realized edge.
 
-### Phase 5: Hardening (Week 4+)
+### Phase 5: Hardening (Week 4+) — NOT STARTED
 
 **Goal:** Make it production-ready.
 
-| Task | Detail |
-|------|--------|
-| Kalshi WebSocket upgrade | Replace REST polling with authenticated WS |
-| Error recovery | Reconnect logic for WS drops, API timeouts, order state reconciliation |
-| Position reconciliation | Periodically verify local position state matches venue state |
-| More mappings | Scale to 50+ pairs |
-| Monitoring | Alerts on kill switch triggers, daily PnL summary |
-| Size scaling | Gradually increase `max_trade_size` as confidence grows |
+| Task | Detail | Status |
+|------|--------|--------|
+| Kalshi WebSocket upgrade | Replace REST polling with authenticated WS | TODO |
+| Error recovery | Reconnect logic for WS drops, API timeouts, order state reconciliation | TODO |
+| Position reconciliation | Periodically verify local position state matches venue state | TODO |
+| More mappings | Scale to 50+ pairs using discover_pairs tool | TODO |
+| Monitoring | Alerts on kill switch triggers, daily PnL summary | TODO |
+| Size scaling | Gradually increase `max_trade_size` as confidence grows | TODO |
 
 ---
 

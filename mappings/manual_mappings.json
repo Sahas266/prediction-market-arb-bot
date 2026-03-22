@@ -18,7 +18,106 @@
           "ticker": "KXRECSSNBER-26"
         }
       }
+    },
+    {
+      "canonical_id": "fed_rate_cut_2026",
+      "title": "Fed rate cut before 2027",
+      "subject_key": "fed_rate_cut_by_2027",
+      "category": "economics",
+      "cutoff_time_utc": "2027-01-01T15:00:00Z",
+      "resolution_source": "Federal Reserve FOMC statement",
+      "venues": {
+        "polymarket": {
+          "condition_id": "0xc60022fe066abd6f96c375adb09f38d92c4931f09c10b805354581b4e5465e93",
+          "yes_token_id": "85002355202646770038788297383084634166875614093071220064343011133051368772502",
+          "no_token_id": "55388042878106612984650771012856953294835512286392194574801105901687237873381",
+          "neg_risk": false
+        },
+        "kalshi": {
+          "ticker": "KXRATECUT-26DEC31"
+        }
+      }
+    },
+    {
+      "canonical_id": "senate_2026_dem",
+      "title": "Democrats win Senate in 2026 midterms",
+      "subject_key": "senate_control_dem_2026",
+      "category": "politics",
+      "cutoff_time_utc": "2027-02-01T15:00:00Z",
+      "resolution_source": "Official election certification",
+      "venues": {
+        "polymarket": {
+          "condition_id": "0x307a1ed89d60b61002dd5bbf00e1408c5ed2ab3fcdb056191ca7ef9bc34d38f3",
+          "yes_token_id": "113287701564209339913693347405685749986285999146352375265161592243948562084773",
+          "no_token_id": "107118433685650702332040991454078902188473746599223732907923581436160160612542",
+          "neg_risk": true,
+          "neg_risk_market_id": "0x22725f09e6a3f61882a1fd2ab4d044dc609767099b539b47053d9d71b5ae6a00"
+        },
+        "kalshi": {
+          "ticker": "CONTROLS-2026-D"
+        }
+      }
+    },
+    {
+      "canonical_id": "senate_2026_rep",
+      "title": "Republicans win Senate in 2026 midterms",
+      "subject_key": "senate_control_rep_2026",
+      "category": "politics",
+      "cutoff_time_utc": "2027-02-01T15:00:00Z",
+      "resolution_source": "Official election certification",
+      "venues": {
+        "polymarket": {
+          "condition_id": "0x86bfb53af7250a40928975c551d12c185b762fa4ce0b40c6a64a50c946d72587",
+          "yes_token_id": "51939490109676186832507970701169130490548061087912630009168726706475001411420",
+          "no_token_id": "108587038225191871355030577171066853142535232042155117887981453750193713427381",
+          "neg_risk": true,
+          "neg_risk_market_id": "0x22725f09e6a3f61882a1fd2ab4d044dc609767099b539b47053d9d71b5ae6a00"
+        },
+        "kalshi": {
+          "ticker": "CONTROLS-2026-R"
+        }
+      }
+    },
+    {
+      "canonical_id": "house_2026_dem",
+      "title": "Democrats win House in 2026 midterms",
+      "subject_key": "house_control_dem_2026",
+      "category": "politics",
+      "cutoff_time_utc": "2027-02-01T15:00:00Z",
+      "resolution_source": "Official election certification",
+      "venues": {
+        "polymarket": {
+          "condition_id": "0xd5d9fc47718bd553592d126b1fa5e87183d27f3936975b0c04cc0f2dec1f1bb4",
+          "yes_token_id": "83247781037352156539108067944461291821683755894607244160607042790356561625563",
+          "no_token_id": "33156410999665902694791064431724433042010245771106314074312009703157423879038",
+          "neg_risk": true,
+          "neg_risk_market_id": "0xd4ec843b5228dfe0779147cf13ca9954bc22edc63876954dc2fb95fcee42ef00"
+        },
+        "kalshi": {
+          "ticker": "CONTROLH-2026-D"
+        }
+      }
+    },
+    {
+      "canonical_id": "house_2026_rep",
+      "title": "Republicans win House in 2026 midterms",
+      "subject_key": "house_control_rep_2026",
+      "category": "politics",
+      "cutoff_time_utc": "2027-02-01T15:00:00Z",
+      "resolution_source": "Official election certification",
+      "venues": {
+        "polymarket": {
+          "condition_id": "0x4e4f77e7dbf4cab666e9a1943674d7ae66348e862df03ea6f44b11eb95731928",
+          "yes_token_id": "65139230827417363158752884968303867495725894165574887635816574090175320800482",
+          "no_token_id": "17371217118862125782438074585166210555214661810823929795910191856905580975576",
+          "neg_risk": true,
+          "neg_risk_market_id": "0xd4ec843b5228dfe0779147cf13ca9954bc22edc63876954dc2fb95fcee42ef00"
+        },
+        "kalshi": {
+          "ticker": "CONTROLH-2026-R"
+        }
+      }
     }
   ],
-  "_note": "Add more verified pairs here. Each pair must be manually verified for matching resolution criteria."
+  "_note": "Each pair is manually verified for matching resolution criteria across venues."
 }
