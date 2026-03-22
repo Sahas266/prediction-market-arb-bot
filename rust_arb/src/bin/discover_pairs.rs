@@ -85,10 +85,22 @@ struct KalshiMarket {
     title: Option<String>,
     event_ticker: Option<String>,
     status: Option<String>,
-    yes_ask: Option<f64>,
-    no_ask: Option<f64>,
+    market_type: Option<String>,
     category: Option<String>,
     close_time: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KalshiEventResponse {
+    event: Option<KalshiEvent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KalshiEvent {
+    event_ticker: Option<String>,
+    title: Option<String>,
+    sub_title: Option<String>,
+    category: Option<String>,
 }
 
 // ── Output types ────────────────────────────────────────────────────────────
@@ -122,7 +134,10 @@ struct PmCandidate {
 #[derive(Debug, Serialize)]
 struct KalshiCandidate {
     ticker: String,
+    /// The market-level title (may be ugly for multi-leg sports markets)
     title: String,
+    /// Event-level question — cleaner, human-readable
+    event_question: Option<String>,
     event_ticker: Option<String>,
     category: Option<String>,
     close_time: Option<String>,
@@ -290,23 +305,37 @@ async fn fetch_polymarket_markets(client: &Client, gamma_url: &str) -> Result<Ve
     Ok(valid)
 }
 
-async fn fetch_kalshi_markets(client: &Client, rest_url: &str) -> Result<Vec<KalshiMarket>> {
-    let mut all_markets = Vec::new();
+/// Fetch Kalshi events first, then their markets.
+/// This avoids the multi-variate sports market flood from /markets.
+async fn fetch_kalshi_markets(
+    client: &Client,
+    rest_url: &str,
+    event_titles_out: &mut std::collections::HashMap<String, String>,
+) -> Result<Vec<KalshiMarket>> {
+    // Step 1: fetch events
+    let mut all_events = Vec::new();
     let mut cursor: Option<String> = None;
 
     loop {
-        let mut url = format!("{}/markets?limit=200", rest_url);
+        let mut url = format!("{}/events?limit=200&status=open", rest_url);
         if let Some(ref c) = cursor {
             url.push_str(&format!("&cursor={}", c));
         }
-        println!("  Fetching Kalshi markets (cursor={})...", cursor.as_deref().unwrap_or("start"));
+        println!("  Fetching Kalshi events (cursor={})...", cursor.as_deref().unwrap_or("start"));
         let resp = client.get(&url).send().await?;
         let text = resp.text().await?;
-        let data: KalshiMarketsResponse = serde_json::from_str(&text)?;
 
-        if let Some(markets) = data.markets {
-            let count = markets.len();
-            all_markets.extend(markets);
+        #[derive(Deserialize)]
+        struct EventsResp {
+            events: Option<Vec<KalshiEvent>>,
+            cursor: Option<String>,
+        }
+
+        let data: EventsResp = serde_json::from_str(&text)?;
+
+        if let Some(events) = data.events {
+            let count = events.len();
+            all_events.extend(events);
             if count < 200 {
                 break;
             }
@@ -319,20 +348,58 @@ async fn fetch_kalshi_markets(client: &Client, rest_url: &str) -> Result<Vec<Kal
             _ => break,
         }
 
-        // Safety limit
-        if all_markets.len() > 10000 {
-            println!("  Reached market limit, stopping Kalshi fetch");
+        if all_events.len() > 5000 {
+            println!("  Reached event limit");
             break;
         }
     }
 
-    // Filter to active markets with tickers
+    println!("  Found {} events", all_events.len());
+
+    // Store event titles
+    for ev in &all_events {
+        if let (Some(ref et), Some(ref title)) = (&ev.event_ticker, &ev.title) {
+            event_titles_out.insert(et.clone(), title.clone());
+        }
+    }
+
+    // Step 2: fetch markets for each event
+    let mut all_markets = Vec::new();
+    let event_tickers: Vec<String> = all_events
+        .iter()
+        .filter_map(|e| e.event_ticker.clone())
+        .collect();
+
+    println!("  Fetching markets for {} events...", event_tickers.len());
+    for (i, et) in event_tickers.iter().enumerate() {
+        if i > 0 && i % 20 == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let url = format!("{}/markets?event_ticker={}&limit=100", rest_url, et);
+        match client.get(&url).send().await {
+            Ok(resp) => {
+                if let Ok(text) = resp.text().await {
+                    if let Ok(data) = serde_json::from_str::<KalshiMarketsResponse>(&text) {
+                        if let Some(markets) = data.markets {
+                            all_markets.extend(markets);
+                        }
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+    }
+
+    println!("  Total markets fetched: {}", all_markets.len());
+
+    // Filter to active binary markets
     let valid: Vec<KalshiMarket> = all_markets
         .into_iter()
         .filter(|m| {
             m.ticker.is_some()
                 && m.title.is_some()
                 && matches!(m.status.as_deref(), Some("open") | Some("active"))
+                && m.market_type.as_deref() == Some("binary")
         })
         .collect();
 
@@ -417,16 +484,33 @@ async fn main() -> Result<()> {
     let pm_markets = fetch_polymarket_markets(&client, gamma_url).await?;
     println!("  Found {} active Polymarket markets\n", pm_markets.len());
 
-    println!("[2/4] Fetching Kalshi markets...");
-    let kalshi_markets = fetch_kalshi_markets(&client, kalshi_url).await?;
-    println!("  Found {} open Kalshi markets\n", kalshi_markets.len());
+    println!("[2/4] Fetching Kalshi binary markets via events API...");
+    let mut event_titles = std::collections::HashMap::new();
+    let kalshi_markets = fetch_kalshi_markets(&client, kalshi_url, &mut event_titles).await?;
+    println!("  Found {} binary Kalshi markets ({} events)\n", kalshi_markets.len(), event_titles.len());
 
-    // Build keyword index for Kalshi markets
+    // Build keyword index for Kalshi markets (using event title when available)
     println!("[3/4] Matching candidates...");
     let kalshi_keywords: Vec<(usize, Vec<String>)> = kalshi_markets
         .iter()
         .enumerate()
-        .map(|(i, m)| (i, keywords(m.title.as_deref().unwrap_or(""))))
+        .map(|(i, m)| {
+            // Prefer event title (cleaner) over market title for matching
+            let event_title = m
+                .event_ticker
+                .as_deref()
+                .and_then(|et| event_titles.get(et))
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            let market_title = m.title.as_deref().unwrap_or("");
+            // Combine both for keyword extraction
+            let combined = if event_title.is_empty() {
+                market_title.to_string()
+            } else {
+                format!("{} {}", event_title, market_title)
+            };
+            (i, keywords(&combined))
+        })
         .collect();
 
     let min_score = 0.25; // Minimum score to consider a candidate
@@ -449,13 +533,25 @@ async fn main() -> Result<()> {
         let mut best_reason = String::new();
 
         for (k_idx, _k_kw) in &kalshi_keywords {
-            let k_title = kalshi_markets[*k_idx].title.as_deref().unwrap_or("");
-            let k_ticker = kalshi_markets[*k_idx].ticker.as_deref().unwrap_or("");
+            let km = &kalshi_markets[*k_idx];
+            let k_ticker = km.ticker.as_deref().unwrap_or("");
             if existing_kalshi_tickers.contains(k_ticker) {
-                continue; // Already in manual mappings
+                continue;
             }
 
-            let (score, reason) = compute_score(pm_question, k_title);
+            // Use event title for scoring when available (cleaner than market title)
+            let event_title = km
+                .event_ticker
+                .as_deref()
+                .and_then(|et| event_titles.get(et))
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            let match_target = if event_title.is_empty() {
+                km.title.as_deref().unwrap_or("")
+            } else {
+                event_title
+            };
+            let (score, reason) = compute_score(pm_question, match_target);
             if score > best_score {
                 best_score = score;
                 best_idx = *k_idx;
@@ -485,6 +581,11 @@ async fn main() -> Result<()> {
                 kalshi: KalshiCandidate {
                     ticker: km.ticker.clone().unwrap_or_default(),
                     title: km.title.clone().unwrap_or_default(),
+                    event_question: km
+                        .event_ticker
+                        .as_deref()
+                        .and_then(|et| event_titles.get(et))
+                        .cloned(),
                     event_ticker: km.event_ticker.clone(),
                     category: km.category.clone(),
                     close_time: km.close_time.clone(),
@@ -534,6 +635,11 @@ async fn main() -> Result<()> {
         .map(|(_, m)| KalshiCandidate {
             ticker: m.ticker.clone().unwrap_or_default(),
             title: m.title.clone().unwrap_or_default(),
+            event_question: m
+                .event_ticker
+                .as_deref()
+                .and_then(|et| event_titles.get(et))
+                .cloned(),
             event_ticker: m.event_ticker.clone(),
             category: m.category.clone(),
             close_time: m.close_time.clone(),
@@ -564,20 +670,26 @@ async fn main() -> Result<()> {
 
     if !output.candidates.is_empty() {
         println!("  Top candidates (score >= 0.25):");
-        println!("  {:<6} {:<40} {:<40}", "Score", "Polymarket", "Kalshi");
-        println!("  {}", "-".repeat(86));
+        println!("  {:<6} {:<45} {:<45}", "Score", "Polymarket Question", "Kalshi Question");
+        println!("  {}", "-".repeat(96));
         for c in output.candidates.iter().take(25) {
-            let pm_q = if c.polymarket.question.len() > 38 {
-                format!("{}...", &c.polymarket.question[..35])
+            let pm_q = if c.polymarket.question.len() > 43 {
+                format!("{}...", &c.polymarket.question[..40])
             } else {
                 c.polymarket.question.clone()
             };
-            let k_t = if c.kalshi.title.len() > 38 {
-                format!("{}...", &c.kalshi.title[..35])
+            // Show event question (clean) if available, otherwise market title
+            let k_q_raw = c
+                .kalshi
+                .event_question
+                .as_deref()
+                .unwrap_or(&c.kalshi.title);
+            let k_q = if k_q_raw.len() > 43 {
+                format!("{}...", &k_q_raw[..40])
             } else {
-                c.kalshi.title.clone()
+                k_q_raw.to_string()
             };
-            println!("  {:<6.3} {:<40} {:<40}", c.score, pm_q, k_t);
+            println!("  {:<6.3} {:<45} {:<45}", c.score, pm_q, k_q);
         }
     }
 
