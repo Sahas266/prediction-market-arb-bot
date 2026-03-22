@@ -1,1 +1,1 @@
-# PBC-Hackathon-2026
+# prediction-market-arb-bot
