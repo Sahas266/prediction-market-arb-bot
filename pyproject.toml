@@ -1,0 +1,15 @@
+[project]
+name = "pbc-arb"
+version = "0.1.0"
+description = "Cross-venue prediction market arbitrage bot"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "websockets>=13.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "cryptography>=42.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]

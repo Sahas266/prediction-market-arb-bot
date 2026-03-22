@@ -1,0 +1,40 @@
+venues:
+  polymarket:
+    gamma_url: "https://gamma-api.polymarket.com"
+    clob_url: "https://clob.polymarket.com"
+    ws_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    ws_heartbeat_interval_s: 9
+  kalshi:
+    rest_url: "https://api.elections.kalshi.com/trade-api/v2"
+    ws_url: "wss://api.elections.kalshi.com/trade-api/ws/v2"
+    poll_interval_s: 2
+    orderbook_depth: 5
+
+detector:
+  min_net_edge: "0.03"
+  slippage_buffer: "0.01"
+  max_stale_ms: 2000
+  min_trade_size: "5"
+  max_trade_size: "50"
+  min_depth: "10"
+  persistence_snapshots: 2
+  settlement_blackout_min: 30
+
+risk:
+  max_notional_per_contract: "200"
+  max_notional_total: "2000"
+  max_residual_per_contract: "50"
+  max_trades_per_minute: 5
+  max_consecutive_failures: 3
+  max_api_errors_per_minute: 10
+
+execution:
+  use_fok: true
+  fragile_venue_first: true
+  unwind_strategy: "limit_at_breakeven"
+
+logging:
+  level: "INFO"
+  file: "logs/arb.log"
+  log_all_books: false
+  log_all_opportunities: true

@@ -1,0 +1,24 @@
+{
+  "mappings": [
+    {
+      "canonical_id": "recession_us_2026",
+      "title": "US recession by end of 2026",
+      "subject_key": "us_recession_2026",
+      "category": "economics",
+      "cutoff_time_utc": "2026-12-31T23:59:59Z",
+      "resolution_source": "NBER official determination",
+      "venues": {
+        "polymarket": {
+          "condition_id": "0xfdc73f10edf0266756686f35b5712cffa828b0940fc015e0426c76c934c2105d",
+          "yes_token_id": "100379208559626151022751801118534484742123694725746262280150222742563282755057",
+          "no_token_id": "113732820231608904682346496304917888352004831436510840986547065248348999143469",
+          "neg_risk": false
+        },
+        "kalshi": {
+          "ticker": "KXRECSSNBER-26"
+        }
+      }
+    }
+  ],
+  "_note": "Add more verified pairs here. Each pair must be manually verified for matching resolution criteria."
+}
