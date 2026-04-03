@@ -1,1 +1,1 @@
-C:\Users\sahas\Github\ Repos\PBC-Hackathon-2026\rust_arb\target\release\discover_pairs.exe: C:\Users\sahas\Github\ Repos\PBC-Hackathon-2026\rust_arb\src\bin\discover_pairs.rs
+C:\Users\sahas\Github\ Repos\prediction-market-arb-bot\rust_arb\target\release\discover_pairs.exe: C:\Users\sahas\Github\ Repos\prediction-market-arb-bot\rust_arb\src\bin\discover_pairs.rs

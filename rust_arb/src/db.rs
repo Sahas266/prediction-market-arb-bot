@@ -92,6 +92,12 @@ CREATE TABLE IF NOT EXISTS positions (
     avg_no_cost  TEXT DEFAULT '0',
     PRIMARY KEY (canonical_id, venue)
 );
+
+CREATE INDEX IF NOT EXISTS idx_books_log_canonical_id ON books_log(canonical_id);
+CREATE INDEX IF NOT EXISTS idx_books_log_ts_received ON books_log(ts_received);
+CREATE INDEX IF NOT EXISTS idx_opportunities_canonical_id ON opportunities(canonical_id);
+CREATE INDEX IF NOT EXISTS idx_opportunities_detected_at ON opportunities(detected_at);
+CREATE INDEX IF NOT EXISTS idx_orders_opportunity_id ON orders(opportunity_id);
 "#;
 
 fn db_path() -> PathBuf {
@@ -153,6 +159,80 @@ pub fn log_opportunity(conn: &Connection, opp: &crate::models::Opportunity) -> R
             opp.max_size.to_string(),
             opp.detected_at.to_rfc3339(),
         ],
+    )?;
+    Ok(())
+}
+
+pub fn log_order(
+    conn: &Connection,
+    order_id_local: &str,
+    venue: &str,
+    native_order_id: &str,
+    opportunity_id: &str,
+    side: &str,
+    action: &str,
+    price: &str,
+    size: &str,
+    status: &str,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO orders (order_id_local, venue, native_order_id, opportunity_id, \
+         side, action, price, size, status, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        rusqlite::params![
+            order_id_local,
+            venue,
+            native_order_id,
+            opportunity_id,
+            side,
+            action,
+            price,
+            size,
+            status,
+            now,
+            now,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn update_order_status(conn: &Connection, order_id_local: &str, status: &str) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE orders SET status = ?1, updated_at = ?2 WHERE order_id_local = ?3",
+        rusqlite::params![status, now, order_id_local],
+    )?;
+    Ok(())
+}
+
+/// Delete books_log rows older than `retention_days` days.
+/// Returns the number of rows deleted.
+pub fn prune_books_log(conn: &Connection, retention_days: u32) -> Result<usize> {
+    if retention_days == 0 {
+        return Ok(0);
+    }
+    let rows = conn.execute(
+        "DELETE FROM books_log WHERE ts_received < datetime('now', ?1)",
+        rusqlite::params![format!("-{} days", retention_days)],
+    )?;
+    Ok(rows)
+}
+
+pub fn log_fill(
+    conn: &Connection,
+    fill_id: &str,
+    order_id_local: &str,
+    venue: &str,
+    price: &str,
+    size: &str,
+    fee: &str,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO fills (fill_id, order_id_local, venue, price, size, fee, filled_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![fill_id, order_id_local, venue, price, size, fee, now],
     )?;
     Ok(())
 }

@@ -11,6 +11,10 @@ path = "src/main.rs"
 name = "discover_pairs"
 path = "src/bin/discover_pairs.rs"
 
+[[bin]]
+name = "replay_eval"
+path = "src/bin/replay_eval.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
@@ -35,3 +39,9 @@ anyhow = "1"
 thiserror = "2"
 serde_yaml = "0.9"
 async-trait = "0.1"
+axum = "0.7"
+alloy-primitives = "1"
+alloy-sol-types = "1"
+k256 = { version = "0.13", features = ["ecdsa-core", "ecdsa"] }
+hex = "0.4"
+rand = "0.8"

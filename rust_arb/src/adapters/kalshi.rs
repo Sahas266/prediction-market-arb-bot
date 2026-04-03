@@ -28,13 +28,13 @@ impl KalshiAdapter {
             use rsa::pkcs8::DecodePrivateKey;
             match RsaPrivateKey::from_pkcs8_pem(&config.rsa_private_key_pem) {
                 Ok(key) => Some(key),
-                Err(e) => {
+                Err(_e) => {
                     // Try PKCS1
                     use rsa::pkcs1::DecodeRsaPrivateKey;
                     match RsaPrivateKey::from_pkcs1_pem(&config.rsa_private_key_pem) {
                         Ok(key) => Some(key),
-                        Err(e2) => {
-                            warn!("Failed to parse Kalshi RSA key (PKCS8: {}, PKCS1: {})", e, e2);
+                        Err(_e2) => {
+                            warn!("Failed to parse Kalshi RSA key — check KALSHI_RSA_PRIVATE_KEY format");
                             None
                         }
                     }
@@ -74,13 +74,13 @@ impl KalshiAdapter {
         ])
     }
 
-    fn client(&self) -> &Client {
-        self.client.as_ref().expect("Kalshi adapter not connected")
+    fn client(&self) -> Result<&Client> {
+        self.client.as_ref().context("Kalshi adapter not connected — call connect() first")
     }
 
     async fn get_json(&self, path: &str, auth: bool) -> Result<serde_json::Value> {
         let url = format!("{}{}", self.config.rest_url, path);
-        let mut req = self.client().get(&url);
+        let mut req = self.client()?.get(&url);
 
         if auth {
             for (k, v) in self.auth_headers("GET", path)? {
@@ -91,7 +91,7 @@ impl KalshiAdapter {
         for attempt in 0..3 {
             let resp = req
                 .try_clone()
-                .unwrap()
+                .context("Failed to clone request")?
                 .send()
                 .await?;
 
@@ -159,26 +159,11 @@ impl KalshiAdapter {
             .cloned()
             .unwrap_or_default();
 
-        let (best_yes_bid, depth_yes_bid) = if let Some(last) = yes_levels.last() {
-            let arr = last.as_array().unwrap();
-            (
-                parse_decimal(&arr[0]),
-                parse_decimal(&arr[1]),
-            )
-        } else {
-            (Decimal::ZERO, Decimal::ZERO)
-        };
+        // Find the best (highest) bid by scanning all levels, not assuming sort order
+        let (best_yes_bid, depth_yes_bid) = find_best_bid(&yes_levels);
+        let (best_no_bid, depth_no_bid) = find_best_bid(&no_levels);
 
-        let (best_no_bid, depth_no_bid) = if let Some(last) = no_levels.last() {
-            let arr = last.as_array().unwrap();
-            (
-                parse_decimal(&arr[0]),
-                parse_decimal(&arr[1]),
-            )
-        } else {
-            (Decimal::ZERO, Decimal::ZERO)
-        };
-
+        // Kalshi inversion: to buy YES, you lift the NO bid; to buy NO, you lift the YES bid
         let buy_yes = if best_no_bid > Decimal::ZERO {
             Decimal::ONE - best_no_bid
         } else {
@@ -189,6 +174,10 @@ impl KalshiAdapter {
         } else {
             Decimal::ONE
         };
+
+        // Validate prices are in [0, 1] range
+        validate_price(buy_yes, "buy_yes", native_market_id)?;
+        validate_price(buy_no, "buy_no", native_market_id)?;
 
         Ok(CanonicalBook {
             venue: Venue::Kalshi,
@@ -234,13 +223,23 @@ impl KalshiAdapter {
             }
         }
 
-        let mut req = self.client().post(&url).json(&body);
+        let mut req = self.client()?.post(&url).json(&body);
         for (k, v) in self.auth_headers("POST", path)? {
             req = req.header(&k, &v);
         }
 
         let resp = req.send().await?;
+        let status = resp.status();
         let data: serde_json::Value = resp.json().await?;
+
+        if !status.is_success() {
+            anyhow::bail!(
+                "Kalshi order failed ({}): {}",
+                status,
+                serde_json::to_string_pretty(&data).unwrap_or_default()
+            );
+        }
+
         let order = data.get("order").unwrap_or(&data);
         let order_id = order
             .get("order_id")
@@ -258,13 +257,47 @@ impl KalshiAdapter {
     pub async fn cancel_order(&self, native_order_id: &str) -> Result<bool> {
         let path = format!("/portfolio/orders/{}", native_order_id);
         let url = format!("{}{}", self.config.rest_url, path);
-        let mut req = self.client().delete(&url);
+        let mut req = self.client()?.delete(&url);
         for (k, v) in self.auth_headers("DELETE", &path)? {
             req = req.header(&k, &v);
         }
         let resp = req.send().await?;
         Ok(resp.status().is_success())
     }
+}
+
+/// Find the highest-priced bid across all levels (does not assume sort order).
+/// Returns (best_price, depth_at_best) or (ZERO, ZERO) if no levels.
+fn find_best_bid(levels: &[serde_json::Value]) -> (Decimal, Decimal) {
+    let mut best_price = Decimal::ZERO;
+    let mut best_depth = Decimal::ZERO;
+
+    for level in levels {
+        let (price, depth) = match level.as_array() {
+            Some(arr) if arr.len() >= 2 => (parse_decimal(&arr[0]), parse_decimal(&arr[1])),
+            _ => {
+                warn!("Skipping malformed orderbook level: {}", level);
+                continue;
+            }
+        };
+        if price > best_price {
+            best_price = price;
+            best_depth = depth;
+        }
+    }
+
+    (best_price, best_depth)
+}
+
+/// Validate that a price is in the valid [0, 1] range for prediction markets.
+fn validate_price(price: Decimal, label: &str, market: &str) -> Result<()> {
+    if price < Decimal::ZERO || price > Decimal::ONE {
+        anyhow::bail!(
+            "Invalid {} price {} for market {} — must be in [0, 1]",
+            label, price, market
+        );
+    }
+    Ok(())
 }
 
 fn parse_decimal(val: &serde_json::Value) -> Decimal {

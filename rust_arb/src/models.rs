@@ -75,13 +75,13 @@ pub struct CanonicalBook {
 }
 
 impl CanonicalBook {
-    pub fn age_ms(&self) -> f64 {
+    pub fn age_ms(&self) -> i64 {
         let delta = Utc::now() - self.ts_received;
-        delta.num_milliseconds() as f64
+        delta.num_milliseconds()
     }
 
     pub fn is_fresh(&self, max_age_ms: i64) -> bool {
-        self.age_ms() <= max_age_ms as f64
+        self.age_ms() <= max_age_ms
     }
 }
 
@@ -97,6 +97,6 @@ pub struct Opportunity {
     pub net_edge: Decimal,
     pub max_size: Decimal,
     pub detected_at: DateTime<Utc>,
-    pub yes_book_age_ms: f64,
-    pub no_book_age_ms: f64,
+    pub yes_book_age_ms: i64,
+    pub no_book_age_ms: i64,
 }

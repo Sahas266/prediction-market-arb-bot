@@ -11,7 +11,8 @@ pub struct RiskManager {
     consecutive_failures: u32,
     api_error_timestamps: VecDeque<Instant>,
     killed: bool,
-    positions: HashMap<String, HashMap<String, Decimal>>,
+    /// Per-contract notional positions: canonical_id -> total notional
+    positions: HashMap<String, Decimal>,
 }
 
 impl RiskManager {
@@ -35,9 +36,14 @@ impl RiskManager {
         tracing::error!("KILL SWITCH activated: {}", reason);
     }
 
-    pub fn record_trade(&mut self) {
+    /// Record a successful trade and update position tracking.
+    pub fn record_trade(&mut self, canonical_id: &str, notional: Decimal) {
         self.trade_timestamps.push_back(Instant::now());
         self.consecutive_failures = 0;
+
+        // Update position tracking
+        let entry = self.positions.entry(canonical_id.to_string()).or_insert(Decimal::ZERO);
+        *entry += notional;
     }
 
     pub fn record_failure(&mut self) {
@@ -87,37 +93,33 @@ impl RiskManager {
             return (false, "rate limit: too many trades per minute".to_string());
         }
 
-        let existing = self.positions.get(&opp.canonical_id);
-        let total_existing: Decimal = existing
-            .map(|m| m.values().sum())
-            .unwrap_or(Decimal::ZERO);
+        let existing = self.positions.get(&opp.canonical_id).copied().unwrap_or(Decimal::ZERO);
         let new_notional = opp.max_size * opp.buy_yes_price + opp.max_size * opp.buy_no_price;
-        if total_existing + new_notional > self.config.max_notional_per_contract {
+        if existing + new_notional > self.config.max_notional_per_contract {
             return (
                 false,
                 format!(
-                    "per-contract limit exceeded ({})",
-                    total_existing + new_notional
+                    "per-contract limit exceeded ({} existing + {} new > {} limit)",
+                    existing, new_notional, self.config.max_notional_per_contract
                 ),
             );
         }
 
-        let grand_total: Decimal = self
-            .positions
-            .values()
-            .flat_map(|m| m.values())
-            .sum();
+        let grand_total: Decimal = self.positions.values().sum();
         if grand_total + new_notional > self.config.max_notional_total {
             return (
                 false,
-                format!("total notional limit exceeded ({})", grand_total + new_notional),
+                format!("total notional limit exceeded ({} + {} > {})", grand_total, new_notional, self.config.max_notional_total),
             );
         }
 
         (true, "approved".to_string())
     }
 
+    /// Returns the approved trade size, accounting for existing positions.
     pub fn approved_size(&self, opp: &Opportunity) -> Decimal {
-        opp.max_size.min(self.config.max_notional_per_contract)
+        let existing = self.positions.get(&opp.canonical_id).copied().unwrap_or(Decimal::ZERO);
+        let remaining = (self.config.max_notional_per_contract - existing).max(Decimal::ZERO);
+        opp.max_size.min(remaining).min(self.config.max_notional_per_contract)
     }
 }

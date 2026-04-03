@@ -1,65 +1,51 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rust_decimal::Decimal;
-use std::collections::HashMap;
 use tracing::{error, info, warn};
 
 use crate::adapters::kalshi::KalshiAdapter;
 use crate::adapters::polymarket::PolymarketAdapter;
-use crate::models::{Opportunity, Side, Venue};
+use crate::models::{Opportunity, Side, Venue, VenueMapping};
 
-pub struct Executor {
-    pub kalshi: KalshiAdapter,
-    pub polymarket: PolymarketAdapter,
+pub struct Executor<'a> {
+    pub kalshi: &'a KalshiAdapter,
+    pub polymarket: &'a PolymarketAdapter,
 }
 
-impl Executor {
-    pub fn new(kalshi: KalshiAdapter, polymarket: PolymarketAdapter) -> Self {
+impl<'a> Executor<'a> {
+    pub fn new(kalshi: &'a KalshiAdapter, polymarket: &'a PolymarketAdapter) -> Self {
         Self { kalshi, polymarket }
     }
 
     pub async fn execute_locked_arb(
         &self,
         opp: &Opportunity,
-        venue_market_map: &HashMap<(Venue, String), String>,
+        pm_mapping: &VenueMapping,
+        km_mapping: &VenueMapping,
         size: Decimal,
     ) -> (Option<String>, Option<String>) {
-        let yes_market = venue_market_map
-            .get(&(opp.yes_venue, opp.canonical_id.clone()))
-            .cloned()
-            .unwrap_or_default();
-        let no_market = venue_market_map
-            .get(&(opp.no_venue, opp.canonical_id.clone()))
-            .cloned()
-            .unwrap_or_default();
-
-        if yes_market.is_empty() || no_market.is_empty() {
-            error!("Missing market mapping for {}", opp.canonical_id);
-            return (None, None);
-        }
-
-        // Determine leg order: Kalshi (fragile) first
-        let legs: Vec<(&str, Venue, &str, Decimal, Side)> =
+        // Build legs: fragile venue (Kalshi) first
+        let legs: Vec<(&str, Venue, &VenueMapping, Decimal, Side)> =
             if opp.yes_venue == Venue::Kalshi {
                 vec![
-                    ("yes", opp.yes_venue, &yes_market, opp.buy_yes_price, Side::Yes),
-                    ("no", opp.no_venue, &no_market, opp.buy_no_price, Side::No),
+                    ("yes", Venue::Kalshi, km_mapping, opp.buy_yes_price, Side::Yes),
+                    ("no", Venue::Polymarket, pm_mapping, opp.buy_no_price, Side::No),
                 ]
             } else if opp.no_venue == Venue::Kalshi {
                 vec![
-                    ("no", opp.no_venue, &no_market, opp.buy_no_price, Side::No),
-                    ("yes", opp.yes_venue, &yes_market, opp.buy_yes_price, Side::Yes),
+                    ("no", Venue::Kalshi, km_mapping, opp.buy_no_price, Side::No),
+                    ("yes", Venue::Polymarket, pm_mapping, opp.buy_yes_price, Side::Yes),
                 ]
             } else {
                 vec![
-                    ("yes", opp.yes_venue, &yes_market, opp.buy_yes_price, Side::Yes),
-                    ("no", opp.no_venue, &no_market, opp.buy_no_price, Side::No),
+                    ("yes", opp.yes_venue, pm_mapping, opp.buy_yes_price, Side::Yes),
+                    ("no", opp.no_venue, pm_mapping, opp.buy_no_price, Side::No),
                 ]
             };
 
         // Leg 1
-        let (label1, venue1, market1, price1, side1) = &legs[0];
-        info!("Leg 1 ({}): {} {} at {} size {}", label1, venue1, market1, price1, size);
-        let first_id = match self.place_on_venue(*venue1, market1, *side1, *price1, size).await {
+        let (label1, venue1, mapping1, price1, side1) = &legs[0];
+        info!("Leg 1 ({}): {} {} at {} size {}", label1, venue1, mapping1.native_market_id, price1, size);
+        let first_id = match self.place_on_venue(*venue1, mapping1, *side1, *price1, size).await {
             Ok(id) if !id.is_empty() => id,
             Ok(_) => {
                 warn!("Leg 1 returned no order ID — aborting");
@@ -72,9 +58,9 @@ impl Executor {
         };
 
         // Leg 2
-        let (label2, venue2, market2, price2, side2) = &legs[1];
-        info!("Leg 2 ({}): {} {} at {} size {}", label2, venue2, market2, price2, size);
-        let second_id = match self.place_on_venue(*venue2, market2, *side2, *price2, size).await {
+        let (label2, venue2, mapping2, price2, side2) = &legs[1];
+        info!("Leg 2 ({}): {} {} at {} size {}", label2, venue2, mapping2.native_market_id, price2, size);
+        let second_id = match self.place_on_venue(*venue2, mapping2, *side2, *price2, size).await {
             Ok(id) => id,
             Err(e) => {
                 error!("Leg 2 failed after leg 1 filled: {} — RESIDUAL EXPOSURE", e);
@@ -92,17 +78,31 @@ impl Executor {
     async fn place_on_venue(
         &self,
         venue: Venue,
-        market: &str,
+        mapping: &VenueMapping,
         side: Side,
         price: Decimal,
         size: Decimal,
     ) -> Result<String> {
         match venue {
-            Venue::Kalshi => self.kalshi.place_order(market, side, price, size).await,
+            Venue::Kalshi => {
+                self.kalshi
+                    .place_order(&mapping.native_market_id, side, price, size)
+                    .await
+            }
             Venue::Polymarket => {
-                // Polymarket place_order requires token_id — for now pass market as token
-                // In production this would use the proper token_id from the mapping
-                anyhow::bail!("Polymarket order execution requires py-clob-client SDK (not yet ported to Rust)")
+                let token_id = match side {
+                    Side::Yes => mapping
+                        .yes_token_id
+                        .as_deref()
+                        .context("missing yes_token_id for Polymarket")?,
+                    Side::No => mapping
+                        .no_token_id
+                        .as_deref()
+                        .context("missing no_token_id for Polymarket")?,
+                };
+                self.polymarket
+                    .place_order(token_id, side, price, size, mapping.neg_risk)
+                    .await
             }
         }
     }

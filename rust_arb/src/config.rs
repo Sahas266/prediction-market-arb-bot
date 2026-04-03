@@ -1,28 +1,54 @@
 use anyhow::{Context, Result};
 use rust_decimal::Decimal;
 use serde::Deserialize;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AppConfig {
     pub polymarket: PolymarketConfig,
     pub kalshi: KalshiConfig,
     pub detector: DetectorConfig,
     pub risk: RiskConfig,
+    pub monitoring: MonitoringConfig,
 }
 
-#[derive(Debug, Clone)]
+impl fmt::Debug for AppConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AppConfig")
+            .field("polymarket", &self.polymarket)
+            .field("kalshi", &self.kalshi)
+            .field("detector", &self.detector)
+            .field("risk", &self.risk)
+            .field("monitoring", &self.monitoring)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub struct PolymarketConfig {
     pub gamma_url: String,
     pub clob_url: String,
     pub ws_url: String,
     pub ws_heartbeat_interval_s: u64,
     pub polygon_private_key: String,
-    pub polygon_public_key: String,
 }
 
-#[derive(Debug, Clone)]
+/// Custom Debug that redacts the private key
+impl fmt::Debug for PolymarketConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PolymarketConfig")
+            .field("gamma_url", &self.gamma_url)
+            .field("clob_url", &self.clob_url)
+            .field("ws_url", &self.ws_url)
+            .field("ws_heartbeat_interval_s", &self.ws_heartbeat_interval_s)
+            .field("polygon_private_key", &if self.polygon_private_key.is_empty() { "<not set>" } else { "<REDACTED>" })
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub struct KalshiConfig {
     pub rest_url: String,
     pub ws_url: String,
@@ -30,6 +56,20 @@ pub struct KalshiConfig {
     pub orderbook_depth: u32,
     pub api_key_id: String,
     pub rsa_private_key_pem: String,
+}
+
+/// Custom Debug that redacts the RSA key
+impl fmt::Debug for KalshiConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KalshiConfig")
+            .field("rest_url", &self.rest_url)
+            .field("ws_url", &self.ws_url)
+            .field("poll_interval_s", &self.poll_interval_s)
+            .field("orderbook_depth", &self.orderbook_depth)
+            .field("api_key_id", &self.api_key_id)
+            .field("rsa_private_key_pem", &if self.rsa_private_key_pem.is_empty() { "<not set>" } else { "<REDACTED>" })
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +82,13 @@ pub struct DetectorConfig {
     pub min_depth: Decimal,
     pub persistence_snapshots: u32,
     pub settlement_blackout_min: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct MonitoringConfig {
+    pub health_port: u16,
+    pub alert_webhook_url: String,
+    pub books_log_retention_days: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +106,14 @@ struct RawConfig {
     venues: RawVenues,
     detector: RawDetector,
     risk: RawRisk,
+    monitoring: Option<RawMonitoring>,
+}
+
+#[derive(Deserialize)]
+struct RawMonitoring {
+    health_port: Option<u16>,
+    alert_webhook_url: Option<String>,
+    books_log_retention_days: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -158,6 +213,26 @@ fn parse_env_rsa_key(env_path: &Path) -> (String, String) {
     (api_key_id, private_key_lines.join("\n"))
 }
 
+/// Validate config invariants that could cause financial loss if wrong.
+fn validate_config(cfg: &AppConfig) -> Result<()> {
+    if cfg.kalshi.poll_interval_s == 0 {
+        anyhow::bail!("kalshi.poll_interval_s must be > 0");
+    }
+    if cfg.detector.min_net_edge <= Decimal::ZERO || cfg.detector.min_net_edge >= Decimal::ONE {
+        anyhow::bail!("detector.min_net_edge must be in (0, 1), got {}", cfg.detector.min_net_edge);
+    }
+    if cfg.detector.max_trade_size < cfg.detector.min_trade_size {
+        anyhow::bail!("detector.max_trade_size ({}) must be >= min_trade_size ({})", cfg.detector.max_trade_size, cfg.detector.min_trade_size);
+    }
+    if cfg.risk.max_notional_total < cfg.risk.max_notional_per_contract {
+        anyhow::bail!("risk.max_notional_total ({}) must be >= max_notional_per_contract ({})", cfg.risk.max_notional_total, cfg.risk.max_notional_per_contract);
+    }
+    if cfg.risk.max_trades_per_minute == 0 {
+        anyhow::bail!("risk.max_trades_per_minute must be > 0");
+    }
+    Ok(())
+}
+
 pub fn load_config(config_path: Option<&str>) -> Result<AppConfig> {
     let root = project_root();
     let env_path = root.join(".env");
@@ -191,14 +266,14 @@ pub fn load_config(config_path: Option<&str>) -> Result<AppConfig> {
         format!("-----BEGIN RSA PRIVATE KEY-----\n{}\n-----END RSA PRIVATE KEY-----", rsa_key)
     };
 
-    Ok(AppConfig {
+    let mon = raw.monitoring.as_ref();
+    let cfg = AppConfig {
         polymarket: PolymarketConfig {
             gamma_url: raw.venues.polymarket.gamma_url,
             clob_url: raw.venues.polymarket.clob_url,
             ws_url: raw.venues.polymarket.ws_url,
             ws_heartbeat_interval_s: raw.venues.polymarket.ws_heartbeat_interval_s,
             polygon_private_key: std::env::var("POLYGON_PRIVATE_KEY").unwrap_or_default(),
-            polygon_public_key: std::env::var("POLYGON_PUBLIC_KEY").unwrap_or_default(),
         },
         kalshi: KalshiConfig {
             rest_url: raw.venues.kalshi.rest_url,
@@ -226,5 +301,13 @@ pub fn load_config(config_path: Option<&str>) -> Result<AppConfig> {
             max_consecutive_failures: raw.risk.max_consecutive_failures,
             max_api_errors_per_minute: raw.risk.max_api_errors_per_minute,
         },
-    })
+        monitoring: MonitoringConfig {
+            health_port: mon.and_then(|m| m.health_port).unwrap_or(8080),
+            alert_webhook_url: mon.and_then(|m| m.alert_webhook_url.clone()).unwrap_or_default(),
+            books_log_retention_days: mon.and_then(|m| m.books_log_retention_days).unwrap_or(7),
+        },
+    };
+
+    validate_config(&cfg)?;
+    Ok(cfg)
 }
